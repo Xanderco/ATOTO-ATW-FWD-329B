@@ -74,7 +74,8 @@ details{font-size:13px;color:var(--mute)}
 </div>
 
 <script>
-const SVC=0xffe0, CHR=0xffe1;
+const SVC='0000ffe0-0000-1000-8000-00805f9b34fb', CHR='0000ffe1-0000-1000-8000-00805f9b34fb', SVC2='0000ff10-0000-1000-8000-00805f9b34fb';
+const errStr=e=>e?((e.name?e.name+': ':'')+(e.message||e.toString?.()||JSON.stringify(e))):'unknown';
 let dev=null, ch=null, q=Promise.resolve(), rgbMode=false;
 const $=id=>document.getElementById(id);
 const enc=new TextEncoder(), dec=new TextDecoder();
@@ -92,25 +93,39 @@ function send(cmd){
       await new Promise(r=>setTimeout(r,30));
     }
     log('→ '+cmd);
-  }).catch(e=>log('write error: '+e.message));
+  }).catch(e=>log('write error: '+errStr(e)));
   return q;
 }
 
 async function connect(){
-  if(dev&&dev.gatt.connected){dev.gatt.disconnect();return}
+  if(dev&&dev.gatt&&dev.gatt.connected){dev.gatt.disconnect();return}
+  if(!navigator.bluetooth){log('No Web Bluetooth here. Open in Bluefy.');return}
   try{
     setStatus(false,'Searching…');
-    dev=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'ATW-FWD'},{namePrefix:'ATOTO-FWD'}],optionalServices:[SVC,0xff10]});
+    try{
+      dev=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'ATW-FWD'},{namePrefix:'ATOTO-FWD'}],optionalServices:[SVC,SVC2]});
+    }catch(e){
+      log('filtered scan failed ('+errStr(e)+'), showing all devices');
+      dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SVC,SVC2]});
+    }
+    log('picked '+dev.name);
     dev.addEventListener('gattserverdisconnected',()=>{ch=null;rgbMode=false;setStatus(false,'Disconnected')});
     setStatus(false,'Connecting…');
-    const srv=await (await dev.gatt.connect()).getPrimaryService(SVC);
+    let server,lastErr;
+    for(let i=0;i<3&&!server;i++){
+      try{server=await dev.gatt.connect()}catch(e){lastErr=e;log('connect try '+(i+1)+' failed: '+errStr(e));await new Promise(r=>setTimeout(r,800))}
+    }
+    if(!server) throw lastErr;
+    const srv=await server.getPrimaryService(SVC);
     ch=await srv.getCharacteristic(CHR);
-    await ch.startNotifications();
-    ch.addEventListener('characteristicvaluechanged',e=>log('← '+dec.decode(e.target.value)));
-    await new Promise(r=>setTimeout(r,150));
-    await send('<0A01>'); // handshake the official app sends after subscribing
+    try{
+      await ch.startNotifications();
+      ch.addEventListener('characteristicvaluechanged',e=>log('← '+dec.decode(e.target.value)));
+    }catch(e){log('notify failed: '+errStr(e))}
+    await new Promise(r=>setTimeout(r,200));
+    await send('<0A01>');
     setStatus(true,'Connected to '+dev.name);
-  }catch(e){setStatus(false,'Not connected');log('connect error: '+e.message)}
+  }catch(e){setStatus(false,'Not connected');log('connect error: '+errStr(e))}
 }
 $('connect').onclick=connect;
 
