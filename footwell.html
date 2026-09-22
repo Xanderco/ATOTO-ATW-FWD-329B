@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Footwell Lights</title>
+<style>
+:root{--bg:#0f1115;--card:#1a1d24;--line:#2a2e38;--txt:#e9ecf2;--mute:#8b93a4;--acc:#4fb3d9;--on:#3ecf8e;--off:#e5484d}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 -apple-system,system-ui,sans-serif;padding:16px 16px calc(24px + env(safe-area-inset-bottom))}
+h1{font-size:20px;margin:4px 0 12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 10px}
+button{font:inherit;color:var(--txt);background:#252a33;border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer}
+button:active{transform:scale(.97)}
+button:disabled{opacity:.4}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>button{flex:1 1 auto}
+.big{width:100%;padding:14px;font-weight:600;background:var(--acc);color:#06131a;border:none}
+#status{font-size:14px;color:var(--mute);margin-top:8px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--off);margin-right:6px}
+.dot.ok{background:var(--on)}
+.sw{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.sw button{height:48px;border-radius:10px;border:2px solid transparent}
+input[type=color]{width:100%;height:52px;border:none;border-radius:10px;background:none;padding:0}
+label{display:flex;justify-content:space-between;font-size:14px;color:var(--mute);margin:10px 0 4px}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.grid button{font-size:13px;padding:10px 4px}
+.grid button.sel{border-color:var(--acc);color:var(--acc)}
+details{font-size:13px;color:var(--mute)}
+#log{font:12px ui-monospace,monospace;white-space:pre-wrap;max-height:140px;overflow:auto;color:var(--mute)}
+.warn{background:#3a2a10;border-color:#6b4b12;color:#f5d38a;font-size:14px}
+</style>
+</head>
+<body>
+<h1>Footwell Lights</h1>
+
+<div id="nobt" class="card warn" hidden>This browser has no Web Bluetooth. On iPhone, open this page in the free <b>Bluefy</b> browser.</div>
+
+<div class="card">
+  <button id="connect" class="big">Connect</button>
+  <div id="status"><span class="dot" id="dot"></span><span id="stxt">Not connected</span></div>
+</div>
+
+<div class="card">
+  <h2>Power</h2>
+  <div class="row"><button data-cmd="<0701>" class="c">On</button><button data-cmd="<0700>" class="c">Off</button></div>
+</div>
+
+<div class="card">
+  <h2>Color</h2>
+  <div class="sw" id="sw"></div>
+  <label>Custom <span id="hex">#FF0000</span></label>
+  <input type="color" id="picker" value="#ff0000">
+</div>
+
+<div class="card">
+  <h2>Brightness &amp; speed</h2>
+  <label>Front <span id="fv">9</span></label><input type="range" id="front" min="0" max="9" value="9">
+  <label>Rear <span id="rv">9</span></label><input type="range" id="rear" min="0" max="9" value="9">
+  <label>Effect speed <span id="sv">3</span></label><input type="range" id="speed" min="0" max="5" value="3">
+</div>
+
+<div class="card"><h2>Effects</h2><div class="grid" id="fx"></div></div>
+<div class="card"><h2>Music reactive</h2><div class="grid" id="mx"></div></div>
+
+<div class="card">
+  <details><summary>Options &amp; log</summary>
+    <label style="justify-content:flex-start;gap:8px"><input type="checkbox" id="longfmt"> Use long color format (AT+…)</label>
+    <div id="log"></div>
+  </details>
+</div>
+
+<script>
+const SVC=0xffe0, CHR=0xffe1;
+let dev=null, ch=null, q=Promise.resolve(), rgbMode=false;
+const $=id=>document.getElementById(id);
+const enc=new TextEncoder(), dec=new TextDecoder();
+function log(s){const l=$('log');l.textContent=(new Date().toLocaleTimeString()+' '+s+'\n'+l.textContent).slice(0,4000)}
+function setStatus(ok,t){$('dot').classList.toggle('ok',ok);$('stxt').textContent=t;$('connect').textContent=ok?'Disconnect':'Connect'}
+if(!navigator.bluetooth){$('nobt').hidden=false}
+
+function send(cmd){
+  if(!ch){log('not connected: '+cmd);return q}
+  q=q.then(async()=>{
+    const data=enc.encode(cmd);
+    for(let i=0;i<data.length;i+=20){
+      const part=data.slice(i,i+20);
+      if(ch.writeValueWithoutResponse) await ch.writeValueWithoutResponse(part); else await ch.writeValue(part);
+      await new Promise(r=>setTimeout(r,30));
+    }
+    log('→ '+cmd);
+  }).catch(e=>log('write error: '+e.message));
+  return q;
+}
+
+async function connect(){
+  if(dev&&dev.gatt.connected){dev.gatt.disconnect();return}
+  try{
+    setStatus(false,'Searching…');
+    dev=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'ATW-FWD'},{namePrefix:'ATOTO-FWD'}],optionalServices:[SVC,0xff10]});
+    dev.addEventListener('gattserverdisconnected',()=>{ch=null;rgbMode=false;setStatus(false,'Disconnected')});
+    setStatus(false,'Connecting…');
+    const srv=await (await dev.gatt.connect()).getPrimaryService(SVC);
+    ch=await srv.getCharacteristic(CHR);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged',e=>log('← '+dec.decode(e.target.value)));
+    await new Promise(r=>setTimeout(r,150));
+    await send('<0A01>'); // handshake the official app sends after subscribing
+    setStatus(true,'Connected to '+dev.name);
+  }catch(e){setStatus(false,'Not connected');log('connect error: '+e.message)}
+}
+$('connect').onclick=connect;
+
+document.querySelectorAll('.c').forEach(b=>b.onclick=()=>send(b.dataset.cmd));
+
+async function setColor(hex){
+  hex=hex.replace('#','').toUpperCase();
+  $('hex').textContent='#'+hex;
+  if(!rgbMode){await send('<1E18>');rgbMode=true;await new Promise(r=>setTimeout(r,100))}
+  send($('longfmt').checked?'AT+<06'+hex+'>0000FF1100001000800000805F9B34FB':'<06'+hex+'>');
+  document.querySelectorAll('.grid button').forEach(x=>x.classList.remove('sel'));
+}
+const colors=['FF0000','FF6A00','FFD000','00FF00','00FFD5','0080FF','0000FF','8A00FF','FF00FF','FF0080','FFFFFF','FFB070'];
+colors.forEach(c=>{const b=document.createElement('button');b.style.background='#'+c;b.title='#'+c;b.onclick=()=>setColor(c);$('sw').appendChild(b)});
+let pt;$('picker').oninput=e=>{clearTimeout(pt);pt=setTimeout(()=>setColor(e.target.value),120)};
+
+function slider(id,lab,fmt){let t;$(id).oninput=e=>{$(lab).textContent=e.target.value;clearTimeout(t);t=setTimeout(()=>send(fmt(e.target.value)),120)}}
+slider('front','fv',v=>'<01010'+v+'>');
+slider('rear','rv',v=>'<01020'+v+'>');
+slider('speed','sv',v=>'<0B0'+v+'>');
+
+const fx=[['Dynamic','00'],['Light & Shadow','01'],['Breathing','02'],['Colorful','0C'],['Multicolor','0D'],['Single Color','0E'],['Flowing','03'],['Open & Close','04'],['Wave','05'],['Curtain Pull','06'],['Curtain Close','07'],['Accumulation','08'],['Chasing','09'],['Magical','0A'],['Meteor','0B']];
+const mx=[['Spectrum','0F'],['Stretch','10'],['Wave','11'],['Attract','12'],['Pillar','13'],['Single Color','14']];
+function grid(el,list){list.forEach(([n,c])=>{const b=document.createElement('button');b.textContent=n;b.onclick=()=>{send('<1E'+c+'>');rgbMode=false;document.querySelectorAll('.grid button').forEach(x=>x.classList.remove('sel'));b.classList.add('sel')};$(el).appendChild(b)})}
+grid('fx',fx);grid('mx',mx);
+</script>
+</body>
+</html>
